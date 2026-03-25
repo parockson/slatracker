@@ -12,5 +12,5 @@ __pycache__/
 .DS_Store
 
 # Data files (Optional: keep these out if they contain sensitive info)
-config/sla_targets.xlsx
+
 *.csv

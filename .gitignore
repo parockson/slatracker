@@ -1,0 +1,16 @@
+# Environments
+venv/
+env/
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Streamlit/OS specific
+.streamlit/
+.DS_Store
+
+# Data files (Optional: keep these out if they contain sensitive info)
+config/sla_targets.xlsx
+*.csv

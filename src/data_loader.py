@@ -1,9 +1,9 @@
 """
 Data Loader Module - SLA Price Tracker
 
-This module provides functions to load and preprocess data from Excel and CSV files.
-It handles standardization of column names and string content to ensure consistency 
-during the audit process.
+This module handles the extraction and cleaning of data from the Excel config
+and the uploaded Sales CSV. It ensures all strings are stripped of whitespace
+to maintain data integrity during the audit.
 """
 
 import pandas as pd
@@ -12,20 +12,7 @@ import os
 
 @st.cache_data(ttl=3600)
 def load_all_slas(file_path):
-    """
-    Loads SLA targets from multiple sheets in an Excel configuration file.
-    
-    Expected sheets: "Corporate", "Retail", "SMB".
-    Each sheet should contain 'Category', 'Target', and segment-specific 
-    identifier columns (e.g., 'Name' for Corporate).
-
-    Args:
-        file_path (str): The absolute path to the Excel file.
-
-    Returns:
-        dict: A dictionary where keys are segment names and values are DataFrames,
-              or None if the file is missing or an error occurs.
-    """
+    """Loads SLA targets from Corporate, Retail, and SMB sheets."""
     if not os.path.exists(file_path):
         return None
     try:
@@ -34,8 +21,9 @@ def load_all_slas(file_path):
         for sheet in ["Corporate", "Retail", "SMB"]:
             if sheet in xls.sheet_names:
                 df = pd.read_excel(xls, sheet)
-                # Standardize column names and string content
+                # Clean column headers
                 df.columns = df.columns.astype(str).str.strip()
+                # Clean string data in all object columns
                 for col in df.select_dtypes(include=['object']).columns:
                     df[col] = df[col].astype(str).str.strip()
                 sla_dict[sheet] = df
@@ -45,22 +33,13 @@ def load_all_slas(file_path):
         return None
 
 def process_sales_data(file):
-    """
-    Reads and cleans the uploaded Sales CSV file.
-    
-    Performs basic cleaning such as stripping whitespace from column names 
-    and string values to prevent matching issues.
-
-    Args:
-        file (file-like object): The uploaded CSV file from Streamlit.
-
-    Returns:
-        pd.DataFrame: A cleaned DataFrame, or None if an error occurs.
-    """
+    """Reads and cleans the uploaded Sales CSV file."""
     try:
-        df = pd.read_csv(file)
-        # Standardize column names and string content
+        # Use low_memory=False to handle mixed types in large files
+        df = pd.read_csv(file, low_memory=False)
+        # Clean column headers
         df.columns = df.columns.astype(str).str.strip()
+        # Clean string data in all object columns
         for col in df.select_dtypes(include=['object']).columns:
             df[col] = df[col].astype(str).str.strip()
         return df

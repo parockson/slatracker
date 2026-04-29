@@ -38,9 +38,11 @@ def process_sla_upload(uploaded_file):
 
 def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
     """
+    Core Audit Engine:
     Performs row-level analysis to handle tiered caps (e.g., 1% max GHS 25).
+    Includes safety checks to prevent KeyError and IntCastingNaNError.
     """
-    # 1. Standardize Sales Data
+    # 1. Pre-standardize Sales Data
     internal_keys = {
         user_map['segment']: 'segment', 
         user_map['cat']: 'raw_cat', 
@@ -53,7 +55,6 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
     for col in ['debit_amt', 'credit_amt', 'margin']:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[^\d.-]', '', regex=True), errors='coerce').fillna(0)
 
-    # Mapping logic
     cat_map = {
         'collection': 'col', 'disbursement': 'disb', 'disbursement 1': 'disb',
         'e-distribution': 'E-dis', 'remittance': 'Rem', 'disbursement 2': 'Rem',
@@ -69,7 +70,7 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
 
     final_report = []
 
-    # 2. Process each Segment Tab
+    # 2. Process each Segment Sheet
     for original_tab_name, sla_table in sla_dict.items():
         tab_name_low = original_tab_name.lower()
         seg_mask = df['segment_low'] == tab_name_low
@@ -87,7 +88,7 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
         name_col_sla = next((c for c in sla_table.columns if c.lower().strip() in ['name', 'client', 'disbursement channel name']), None)
         if not name_col_sla: continue
 
-        # Merge with SLA
+        # Merge sales with SLA rules
         merged = seg_data.merge(
             sla_table, 
             left_on=['raw_cat_low', 'ent_low'], 
@@ -95,11 +96,10 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
             how='left'
         )
 
-        # Tier Filter
+        # Filter for correct tier
         tier_match_mask = (merged['active_val'] >= merged['Min_Amt']) & (merged['active_val'] <= merged['Max_Amt'])
         matches = merged[tier_match_mask].copy()
         
-        # Handle unmatched rows
         matched_temp_ids = matches['temp_id'].unique()
         no_matches = seg_data[~seg_data['temp_id'].isin(matched_temp_ids)].copy()
         
@@ -109,9 +109,22 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
             no_matches['Min_Amt'], no_matches['Max_Amt'] = 0, 0
             processed_data = pd.concat([matches, no_matches], ignore_index=True)
         else:
-            processed_data = matches
+            processed_data = matches.copy()
 
-        # Formatted Tier Label (Safe from IntCastingNaNError)
+        # --- BOOTSTRAP MISSING COLUMNS (Fixes KeyError) ---
+        required_cols = {
+            'Tier': 'No Tier', 
+            'Min_Amt': 0, 
+            'Max_Amt': 0, 
+            'Target_Value': 0, 
+            'Is_Percentage': 'TRUE', 
+            'Limit_Value': 99999999
+        }
+        for col, default in required_cols.items():
+            if col not in processed_data.columns:
+                processed_data[col] = default
+
+        # Safe Tier Label Generation (Fixes IntCastingNaNError)
         processed_data['Tier'] = np.where(
             processed_data['Tier'] == "No Tier", 
             "No Tier", 
@@ -122,7 +135,7 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
             ")"
         )
 
-        # --- ROW-LEVEL AUDIT (The Cap Engine) ---
+        # --- ROW-LEVEL TARGET CALCULATION (Handling Caps) ---
         def calculate_expected_fee(row):
             if row['Tier'] == "No Tier": return 0
             
@@ -134,14 +147,14 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
             if pd.isna(cap) or cap == 0: cap = 99999999
             
             if is_pct:
-                # Actual logic check: If calculated % exceeds cap, use cap
+                # 1% but never more than Cap (e.g. GHS 25)
                 return min(val * target, cap)
             else:
                 return target
 
         processed_data['expected_fee_ghc'] = processed_data.apply(calculate_expected_fee, axis=1)
 
-        # 3. Final Grouping & Aggregation
+        # 3. Group and Aggregate Results
         grouped = processed_data.groupby(['Biz seg', 'Cat', '__original_entity_name__', 'Tier']).agg({
             'active_val': 'sum',      
             'temp_id': 'count',       
@@ -156,7 +169,7 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
             '__original_entity_name__': 'Name'
         }, inplace=True)
         
-        # Effective Percentages
+        # Performance Metrics
         grouped['SLA_Target'] = (grouped['expected_fee_ghc'] / grouped['Val(GHC)']).fillna(0)
         grouped['Margin %'] = (grouped['Gr. Rev(GHC)'] / grouped['Val(GHC)']).fillna(0)
         grouped['Var'] = grouped['Margin %'] - grouped['SLA_Target']

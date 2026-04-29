@@ -4,7 +4,7 @@ import numpy as np
 def process_sla_upload(uploaded_file):
     """
     Cleans and prepares the SLA Master Excel data.
-    Ensures numeric columns are valid and tiers have default boundaries.
+    Handles dashes in Limit_Value and standardizes headers.
     """
     try:
         sla_dict = pd.read_excel(uploaded_file, sheet_name=None)
@@ -13,15 +13,17 @@ def process_sla_upload(uploaded_file):
         for sheet_name, df in sla_dict.items():
             df.columns = df.columns.str.strip()
             
-            # Numeric columns cleaning
+            # Numeric cleaning (Handles currency, commas, and dashes)
             num_cols = ['Min_Amt', 'Max_Amt', 'Target_Value', 'Limit_Value']
             for col in num_cols:
                 if col in df.columns:
-                    df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[^\d.]', '', regex=True), errors='coerce')
+                    # Replace dash with a very high number (no limit) or NaN for cleaning
+                    df[col] = df[col].astype(str).replace('-', '99999999').replace('nan', '0')
+                    df[col] = pd.to_numeric(df[col].str.replace(r'[^\d.]', '', regex=True), errors='coerce')
             
-            # Default boundaries
+            # Fill missing tier boundaries
             if 'Min_Amt' in df.columns: df['Min_Amt'] = df['Min_Amt'].fillna(0)
-            if 'Max_Amt' in df.columns: df['Max_Amt'] = df['Max_Amt'].fillna(99999999)
+            if 'Max_Amt' in df.columns: df['Max_Amt'] = df['Max_Amt'].fillna(999999)
             
             if 'Is_Percentage' in df.columns: 
                 df['Is_Percentage'] = df['Is_Percentage'].astype(str).str.upper().str.strip()
@@ -39,10 +41,10 @@ def process_sla_upload(uploaded_file):
 def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
     """
     Core Audit Engine:
-    Performs row-level analysis to handle tiered caps (e.g., 1% max GHS 25).
-    Includes safety checks to prevent KeyError and IntCastingNaNError.
+    Correctly matches SMB/Retail 'Disbursement Channel Name' and Corporate 'Name'.
+    Switches to Credit_Amt for SMB and Retail segments.
     """
-    # 1. Pre-standardize Sales Data
+    # 1. Standardize Sales Data
     internal_keys = {
         user_map['segment']: 'segment', 
         user_map['cat']: 'raw_cat', 
@@ -55,11 +57,10 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
     for col in ['debit_amt', 'credit_amt', 'margin']:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[^\d.-]', '', regex=True), errors='coerce').fillna(0)
 
+    # Category and Segment Mappings
     cat_map = {
-        'collection': 'col', 'disbursement': 'disb', 'disbursement 1': 'disb',
-        'e-distribution': 'E-dis', 'remittance': 'Rem', 'disbursement 2': 'Rem',
-        'airtime purchase': 'TopUp', 'data purchase': 'Data', 'utilities': 'UT',
-        'funds transfer': 'FT', 'ticketing': 'TK'
+        'collection': 'col', 'disbursement': 'disb', 'airtime purchase': 'topup',
+        'e-distribution': 'e-dis', 'remittance': 'rem', 'utilities': 'ut'
     }
     seg_map = {'corporate': 'Cor', 'retail': 'Self', 'smb': 'Asst'}
     
@@ -70,116 +71,105 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
 
     final_report = []
 
-    # 2. Process each Segment Sheet
+    # 2. Process each Sheet (Corporate, Retail, SMB)
     for original_tab_name, sla_table in sla_dict.items():
-        tab_name_low = original_tab_name.lower()
-        seg_mask = df['segment_low'] == tab_name_low
+        tab_name_low = original_tab_name.lower().strip()
+        
+        # Filter sales data to the current segment
+        seg_mask = df['segment_low'].str.contains(tab_name_low) | df['segment_low'].apply(lambda x: x in tab_name_low)
         seg_data = df[seg_mask].copy()
+        
         if seg_data.empty: continue
             
+        # Get entity name from Sales file (Dynamic mapping)
         ent_col_raw = user_map.get(original_tab_name)
-        seg_data['__original_entity_name__'] = sales_df.loc[seg_data.index, ent_col_raw]
-        seg_data['ent_low'] = seg_data['__original_entity_name__'].astype(str).str.strip().str.lower()
+        if ent_col_raw and ent_col_raw in sales_df.columns:
+            seg_data['Name_Sales'] = sales_df.loc[seg_data.index, ent_col_raw]
+        else:
+            seg_data['Name_Sales'] = sales_df.iloc[seg_data.index, 0] # Fallback to first column
+
+        seg_data['name_low'] = seg_data['Name_Sales'].astype(str).str.strip().str.lower()
         
-        current_seg_abbr = seg_map.get(tab_name_low, original_tab_name)
-        seg_data['active_val'] = seg_data['debit_amt'] if current_seg_abbr == 'Cor' else seg_data['credit_amt']
+        # LOGIC: Corporate = Debit | SMB & Retail = Credit
+        is_corp = "cor" in tab_name_low
+        seg_data['active_val'] = seg_data['debit_amt'] if is_corp else seg_data['credit_amt']
         seg_data['temp_id'] = range(len(seg_data))
 
-        name_col_sla = next((c for c in sla_table.columns if c.lower().strip() in ['name', 'client', 'disbursement channel name']), None)
-        if not name_col_sla: continue
+        # Identify 'Name' or 'Disbursement Channel Name' in SLA sheet
+        name_col_sla = next((c for c in sla_table.columns if c.lower().strip() in 
+                            ['name', 'client', 'disbursement channel name', 'partner']), None)
+        
+        if not name_col_sla:
+            name_col_sla = sla_table.columns[0] # Extreme Fallback
 
-        # Merge sales with SLA rules
+        # Join Sales with SLA
         merged = seg_data.merge(
             sla_table, 
-            left_on=['raw_cat_low', 'ent_low'], 
+            left_on=['raw_cat_low', 'name_low'], 
             right_on=['Category', name_col_sla], 
             how='left'
         )
 
-        # Filter for correct tier
+        # Tier Filter Logic
         tier_match_mask = (merged['active_val'] >= merged['Min_Amt']) & (merged['active_val'] <= merged['Max_Amt'])
         matches = merged[tier_match_mask].copy()
         
-        matched_temp_ids = matches['temp_id'].unique()
-        no_matches = seg_data[~seg_data['temp_id'].isin(matched_temp_ids)].copy()
+        matched_ids = matches['temp_id'].unique()
+        no_matches = seg_data[~seg_data['temp_id'].isin(matched_ids)].copy()
         
         if not no_matches.empty:
             no_matches['Tier'] = "No Tier"
-            no_matches['Target_Value'], no_matches['Is_Percentage'], no_matches['Limit_Value'] = 0, "TRUE", 99999999
-            no_matches['Min_Amt'], no_matches['Max_Amt'] = 0, 0
+            for c in ['Target_Value', 'Limit_Value', 'Min_Amt', 'Max_Amt']: no_matches[c] = 0
+            no_matches['Is_Percentage'] = "TRUE"
             processed_data = pd.concat([matches, no_matches], ignore_index=True)
         else:
             processed_data = matches.copy()
 
-        # --- BOOTSTRAP MISSING COLUMNS (Fixes KeyError) ---
-        required_cols = {
-            'Tier': 'No Tier', 
-            'Min_Amt': 0, 
-            'Max_Amt': 0, 
-            'Target_Value': 0, 
-            'Is_Percentage': 'TRUE', 
-            'Limit_Value': 99999999
-        }
-        for col, default in required_cols.items():
+        # Handle column bootstrapping
+        required = ['Tier', 'Min_Amt', 'Max_Amt', 'Target_Value', 'Is_Percentage', 'Limit_Value']
+        for col in required:
             if col not in processed_data.columns:
-                processed_data[col] = default
+                processed_data[col] = 0 if 'Amt' in col or 'Value' in col else "TRUE"
 
-        # Safe Tier Label Generation (Fixes IntCastingNaNError)
+        # Tier String Formatting
         processed_data['Tier'] = np.where(
-            processed_data['Tier'] == "No Tier", 
-            "No Tier", 
-            "T (" + 
-            processed_data['Min_Amt'].fillna(0).astype(int).astype(str) + 
-            "-" + 
-            processed_data['Max_Amt'].fillna(0).astype(int).astype(str) + 
-            ")"
+            processed_data['Tier'] == "No Tier", "No Tier", 
+            "T (" + processed_data['Min_Amt'].fillna(0).astype(int).astype(str) + "-" + 
+            processed_data['Max_Amt'].fillna(0).astype(int).astype(str) + ")"
         )
 
-        # --- ROW-LEVEL TARGET CALCULATION (Handling Caps) ---
+        # --- Row-Level Audit Calculation ---
         def calculate_expected_fee(row):
             if row['Tier'] == "No Tier": return 0
-            
             val = row['active_val']
             target = float(row.get('Target_Value', 0))
             is_pct = str(row.get('Is_Percentage', 'TRUE')).upper() == "TRUE"
-            cap = row.get('Limit_Value', 99999999) 
+            cap = row.get('Limit_Value', 99999999)
             
+            # Treat 0 or null caps as effectively infinite
             if pd.isna(cap) or cap == 0: cap = 99999999
             
-            if is_pct:
-                # 1% but never more than Cap (e.g. GHS 25)
-                return min(val * target, cap)
-            else:
-                return target
+            return min(val * target, cap) if is_pct else target
 
         processed_data['expected_fee_ghc'] = processed_data.apply(calculate_expected_fee, axis=1)
 
-        # 3. Group and Aggregate Results
-        grouped = processed_data.groupby(['Biz seg', 'Cat', '__original_entity_name__', 'Tier']).agg({
-            'active_val': 'sum',      
-            'temp_id': 'count',       
-            'margin': 'sum',          
-            'expected_fee_ghc': 'sum' 
+        # 3. Final Aggregation
+        grouped = processed_data.groupby(['Biz seg', 'Cat', 'Name_Sales', 'Tier']).agg({
+            'active_val': 'sum', 'temp_id': 'count', 'margin': 'sum', 'expected_fee_ghc': 'sum'
         }).reset_index()
 
         grouped.rename(columns={
-            'active_val': 'Val(GHC)', 
-            'temp_id': 'Vol', 
-            'margin': 'Gr. Rev(GHC)', 
-            '__original_entity_name__': 'Name'
+            'active_val': 'Val(GHC)', 'temp_id': 'Vol', 
+            'margin': 'Gr. Rev(GHC)', 'Name_Sales': 'Name'
         }, inplace=True)
         
-        # Performance Metrics
         grouped['SLA_Target'] = (grouped['expected_fee_ghc'] / grouped['Val(GHC)']).fillna(0)
         grouped['Margin %'] = (grouped['Gr. Rev(GHC)'] / grouped['Val(GHC)']).fillna(0)
         grouped['Var'] = grouped['Margin %'] - grouped['SLA_Target']
         
-        # Status assignment
         diff = (grouped['Margin %'] - grouped['SLA_Target']).abs()
         status_pass = diff <= ( (grouped['SLA_Target'].abs() * tolerance) + 0.0001 )
-        
         grouped['Status'] = np.where(grouped['Tier'] == "No Tier", "No Target", np.where(status_pass, "Pass", "Fail"))
-        grouped['SLA_Target'] = grouped['SLA_Target'].round(4)
         
         final_report.append(grouped)
 

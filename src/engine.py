@@ -48,13 +48,12 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
     internal_keys = {
         user_map['segment']: 'segment', 
         user_map['cat']: 'raw_cat', 
-        user_map['debit']: 'debit_amt', 
         user_map['credit']: 'credit_amt',
         user_map['margin']: 'margin'
     }
     df = sales_df.rename(columns=internal_keys).copy()
     
-    for col in ['debit_amt', 'credit_amt', 'margin']:
+    for col in ['credit_amt', 'margin']:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[^\d.-]', '', regex=True), errors='coerce').fillna(0)
 
     # Category and Segment Mappings
@@ -90,9 +89,8 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
 
         seg_data['name_low'] = seg_data['Name_Sales'].astype(str).str.strip().str.lower()
         
-        # LOGIC: Corporate = Debit | SMB & Retail = Credit
-        is_corp = "cor" in tab_name_low
-        seg_data['active_val'] = seg_data['debit_amt'] if is_corp else seg_data['credit_amt']
+        # LOGIC: All segments now use Credit Amt
+        seg_data['active_val'] = seg_data['credit_amt']
         seg_data['temp_id'] = range(len(seg_data))
 
         # Identify 'Name' or 'Disbursement Channel Name' in SLA sheet

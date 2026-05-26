@@ -51,7 +51,16 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
         user_map['credit']: 'credit_amt',
         user_map['margin']: 'margin'
     }
+    if 'dest_fund' in user_map:
+        internal_keys[user_map['dest_fund']] = 'dest_fund'
+        
     df = sales_df.rename(columns=internal_keys).copy()
+    
+    if 'dest_fund' in df.columns:
+        df['dest_fund_low'] = df['dest_fund'].astype(str).str.strip().str.lower()
+    else:
+        df['dest_fund'] = ""
+        df['dest_fund_low'] = ""
     
     for col in ['credit_amt', 'margin']:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[^\d.-]', '', regex=True), errors='coerce').fillna(0)
@@ -87,6 +96,10 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
         else:
             seg_data['Name_Sales'] = sales_df.iloc[seg_data.index, 0] # Fallback to first column
 
+        # Extract Destination Of Fund (original unmodified name)
+        seg_data['Destination Of Fund'] = seg_data['dest_fund'].astype(str).str.strip()
+        
+        # Match using Name_Sales (lowercased)
         seg_data['name_low'] = seg_data['Name_Sales'].astype(str).str.strip().str.lower()
         
         # LOGIC: All segments now use Credit Amt
@@ -100,13 +113,27 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
         if not name_col_sla:
             name_col_sla = sla_table.columns[0] # Extreme Fallback
 
-        # Join Sales with SLA
-        merged = seg_data.merge(
-            sla_table, 
-            left_on=['raw_cat_low', 'name_low'], 
-            right_on=['Category', name_col_sla], 
-            how='left'
-        )
+        # Identify if 'Destination Of Fund' is present in the SLA sheet
+        dest_col_sla = next((c for c in sla_table.columns if c.lower().strip() == 'destination of fund'), None)
+
+        if dest_col_sla:
+            # Join Sales with SLA including Destination Of Fund
+            merged = seg_data.merge(
+                sla_table, 
+                left_on=['raw_cat_low', 'name_low', 'dest_fund_low'], 
+                right_on=['Category', name_col_sla, dest_col_sla], 
+                how='left',
+                suffixes=('', '_sla')
+            )
+        else:
+            # Fallback join without Destination Of Fund
+            merged = seg_data.merge(
+                sla_table, 
+                left_on=['raw_cat_low', 'name_low'], 
+                right_on=['Category', name_col_sla], 
+                how='left',
+                suffixes=('', '_sla')
+            )
 
         # Tier Filter Logic
         tier_match_mask = (merged['active_val'] >= merged['Min_Amt']) & (merged['active_val'] <= merged['Max_Amt'])
@@ -152,7 +179,7 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
         processed_data['expected_fee_ghc'] = processed_data.apply(calculate_expected_fee, axis=1)
 
         # 3. Final Aggregation
-        grouped = processed_data.groupby(['Biz seg', 'Cat', 'Name_Sales', 'Tier']).agg({
+        grouped = processed_data.groupby(['Biz seg', 'Cat', 'Name_Sales', 'Destination Of Fund', 'Tier']).agg({
             'active_val': 'sum', 'temp_id': 'count', 'margin': 'sum', 'expected_fee_ghc': 'sum'
         }).reset_index()
 

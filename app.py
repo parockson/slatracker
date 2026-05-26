@@ -199,6 +199,11 @@ def main():
                 index=get_best_match(['credit', 'cr'], df_raw.columns),
                 help="Look for 'Credit Amt' or just 'Credit'"
             )
+            dest_col = st.selectbox(
+                "Destination Of Fund Column", df_raw.columns,
+                index=get_best_match(['destination', 'fund', 'dest'], df_raw.columns),
+                help="Look for 'Destination Of Fund', 'Destination', or 'Fund'"
+            )
             
         # Outcomes and per-tab entity assignment block
         with c3:
@@ -209,7 +214,7 @@ def main():
             )
             
             # Build mapping dictionary that tells the engine exactly where to look for data
-            map_dict = {'segment': seg_col, 'cat': cat_col, 'credit': cre_col, 'margin': mar_col}
+            map_dict = {'segment': seg_col, 'cat': cat_col, 'credit': cre_col, 'margin': mar_col, 'dest_fund': dest_col}
             
             # Dynamically loop through the SLA configurations and ask for each sheet's specific Entity Name column mapping
             for tab in sla_data.keys():
@@ -272,7 +277,7 @@ def main():
                     return [f'color: {color}; font-weight: bold' if col == 'Status' else '' for col in row.index]
 
                 # Enforces explicit column order layout in the generated dataframe
-                disp_cols = ['Biz seg', 'Cat', 'Name', 'Tier', 'Vol', 'Val(GHC)', 'Gr. Rev(GHC)', 'Margin %', 'SLA_Target', 'Var', 'Status']
+                disp_cols = ['Biz seg', 'Cat', 'Name', 'Destination Of Fund', 'Tier', 'Vol', 'Val(GHC)', 'Gr. Rev(GHC)', 'Margin %', 'SLA_Target', 'Var', 'Status']
                 
                 def render_styled_df(df):
                     """Formats the DataFrame string outputs for clean, localized currency displays"""

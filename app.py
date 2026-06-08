@@ -200,9 +200,9 @@ def main():
                 help="Look for 'Credit Amt' or just 'Credit'"
             )
             dest_col = st.selectbox(
-                "Destination Of Fund Column", df_raw.columns,
+                "Destination of Funds Column", df_raw.columns,
                 index=get_best_match(['destination', 'fund', 'dest'], df_raw.columns),
-                help="Look for 'Destination Of Fund', 'Destination', or 'Fund'"
+                help="Look for 'Destination of Funds', 'Destination', or 'Fund'"
             )
             
         # Outcomes and per-tab entity assignment block
@@ -233,7 +233,12 @@ def main():
             # Executes the core calculation algorithm found in src/engine.py
             results = run_sla_audit(df_raw, sla_data, map_dict, tolerance=tolerance)
             
+            # Standardize column name to handle any caching issues
             if not results.empty:
+                if 'Destination Of Fund' in results.columns:
+                    results = results.rename(columns={'Destination Of Fund': 'Destination of Funds'})
+                elif 'Destination of Funds' not in results.columns:
+                    results['Destination of Funds'] = ""
                 st.divider()
                 
                 # ==========================================
@@ -277,7 +282,7 @@ def main():
                     return [f'color: {color}; font-weight: bold' if col == 'Status' else '' for col in row.index]
 
                 # Enforces explicit column order layout in the generated dataframe
-                disp_cols = ['Biz seg', 'Cat', 'Name', 'Destination Of Fund', 'Tier', 'Vol', 'Val(GHC)', 'Gr. Rev(GHC)', 'Margin %', 'SLA_Target', 'Var', 'Status']
+                disp_cols = ['Biz seg', 'Cat', 'Name', 'Destination of Funds', 'Tier', 'Vol', 'Val(GHC)', 'Gr. Rev(GHC)', 'Margin %', 'SLA_Target', 'Var', 'Status']
                 
                 def render_styled_df(df):
                     """Formats the DataFrame string outputs for clean, localized currency displays"""

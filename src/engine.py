@@ -83,8 +83,12 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
     for original_tab_name, sla_table in sla_dict.items():
         tab_name_low = original_tab_name.lower().strip()
         
-        # Filter sales data to the current segment
-        seg_mask = df['segment_low'].str.contains(tab_name_low) | df['segment_low'].apply(lambda x: x in tab_name_low)
+        # Filter sales data to the current segment. Match both the original segment name and its mapped display name.
+        seg_name_variants = [tab_name_low]
+        # Include mapped display name if present in seg_map
+        if tab_name_low in seg_map:
+            seg_name_variants.append(seg_map[tab_name_low].lower())
+        seg_mask = df['segment_low'].isin(seg_name_variants)
         seg_data = df[seg_mask].copy()
         
         if seg_data.empty: continue
@@ -96,8 +100,8 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
         else:
             seg_data['Name_Sales'] = sales_df.iloc[seg_data.index, 0] # Fallback to first column
 
-        # Extract Destination Of Fund (original unmodified name)
-        seg_data['Destination Of Fund'] = seg_data['dest_fund'].astype(str).str.strip()
+        # Extract Destination of Funds (original unmodified name)
+        seg_data['Destination of Funds'] = seg_data['dest_fund'].astype(str).str.strip()
         
         # Match using Name_Sales (lowercased)
         seg_data['name_low'] = seg_data['Name_Sales'].astype(str).str.strip().str.lower()
@@ -113,11 +117,12 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
         if not name_col_sla:
             name_col_sla = sla_table.columns[0] # Extreme Fallback
 
-        # Identify if 'Destination Of Fund' is present in the SLA sheet
-        dest_col_sla = next((c for c in sla_table.columns if c.lower().strip() == 'destination of fund'), None)
+        # Identify if any Destination of Funds column is present in the SLA sheet
+        dest_col_sla = next((c for c in sla_table.columns if c.lower().strip() in 
+                            ['destination of fund', 'destination of funds']), None)
 
         if dest_col_sla:
-            # Join Sales with SLA including Destination Of Fund
+            # Join Sales with SLA including Destination of Funds
             merged = seg_data.merge(
                 sla_table, 
                 left_on=['raw_cat_low', 'name_low', 'dest_fund_low'], 
@@ -126,7 +131,7 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
                 suffixes=('', '_sla')
             )
         else:
-            # Fallback join without Destination Of Fund
+            # Fallback join without Destination of Funds
             merged = seg_data.merge(
                 sla_table, 
                 left_on=['raw_cat_low', 'name_low'], 
@@ -179,7 +184,7 @@ def run_sla_audit(sales_df, sla_dict, user_map, tolerance=0.10):
         processed_data['expected_fee_ghc'] = processed_data.apply(calculate_expected_fee, axis=1)
 
         # 3. Final Aggregation
-        grouped = processed_data.groupby(['Biz seg', 'Cat', 'Name_Sales', 'Destination Of Fund', 'Tier']).agg({
+        grouped = processed_data.groupby(['Biz seg', 'Cat', 'Name_Sales', 'Destination of Funds', 'Tier']).agg({
             'active_val': 'sum', 'temp_id': 'count', 'margin': 'sum', 'expected_fee_ghc': 'sum'
         }).reset_index()
 
